@@ -5,6 +5,8 @@ original web prototype — same crop/zoom/averaging logic, same retro-futurism
 look (dark gradient background, baby-blue outlined title, chunky pixel
 display font, neon-bordered panels).
 
+**Live site:** https://anthonyraad.github.io/PXLR/
+
 ## Project structure
 
 ```
@@ -41,6 +43,10 @@ machine (which also stamps in the right SDK/toolchain versions for you).
    flutter run
    ```
 
+## GitHub Pages
+
+Pushes to `main` build the Flutter web app and deploy it via GitHub Actions
+(`.github/workflows/deploy-pages.yml`) with `--base-href /PXLR/`.
 ## Permissions
 
 `image_picker` needs a usage-description string on iOS. Add this to
