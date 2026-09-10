@@ -20,12 +20,28 @@ class MosaicEngine {
   /// Returns up to [count] dominant colors in [cellColors], ranked by how
   /// many cells fall into each quantized bucket. Bucket averages are used
   /// so the swatches match the mosaic rather than the coarse quantizer.
-  /// Near-white cells are ignored — they're usually empty background.
+  ///
+  /// Background is excluded: near-white flats, plus the most common color
+  /// along the mosaic perimeter (typical photo backdrop / letterbox).
   static List<ui.Color> dominantColors(
     List<List<ui.Color>> cellColors, {
     int count = 3,
     int quantizeStep = 24,
   }) {
+    final n = cellColors.length;
+    if (n == 0) return const [];
+
+    final bgKey = _perimeterBackgroundKey(cellColors, quantizeStep);
+    (int r, int g, int b)? bgAvg;
+    if (bgKey != null) {
+      bgAvg = _bucketAverage(
+        cellColors,
+        quantizeStep: quantizeStep,
+        onlyKey: bgKey,
+        perimeterOnly: true,
+      );
+    }
+
     final buckets = <int, (int r, int g, int b, int n)>{};
     for (final row in cellColors) {
       for (final c in row) {
@@ -33,10 +49,11 @@ class MosaicEngine {
         final g = (c.g * 255.0).round() & 0xFF;
         final b = (c.b * 255.0).round() & 0xFF;
         if (_isNearWhite(r, g, b)) continue;
-        final qr = (r ~/ quantizeStep) * quantizeStep;
-        final qg = (g ~/ quantizeStep) * quantizeStep;
-        final qb = (b ~/ quantizeStep) * quantizeStep;
-        final key = (qr << 16) | (qg << 8) | qb;
+        if (bgAvg != null && _nearRgb(r, g, b, bgAvg.$1, bgAvg.$2, bgAvg.$3)) {
+          continue;
+        }
+        final key = _quantizeKey(r, g, b, quantizeStep);
+        if (bgKey != null && key == bgKey) continue;
         final prev = buckets[key];
         if (prev == null) {
           buckets[key] = (r, g, b, 1);
@@ -51,13 +68,106 @@ class MosaicEngine {
 
     return ranked
         .map((e) => ui.Color.fromARGB(255, e.$1 ~/ e.$4, e.$2 ~/ e.$4, e.$3 ~/ e.$4))
-        .where((c) => !_isNearWhite(
-              (c.r * 255.0).round() & 0xFF,
-              (c.g * 255.0).round() & 0xFF,
-              (c.b * 255.0).round() & 0xFF,
-            ))
+        .where((c) {
+          final r = (c.r * 255.0).round() & 0xFF;
+          final g = (c.g * 255.0).round() & 0xFF;
+          final b = (c.b * 255.0).round() & 0xFF;
+          if (_isNearWhite(r, g, b)) return false;
+          if (bgAvg != null && _nearRgb(r, g, b, bgAvg.$1, bgAvg.$2, bgAvg.$3)) {
+            return false;
+          }
+          return true;
+        })
         .take(count)
         .toList();
+  }
+
+  static int _quantizeKey(int r, int g, int b, int step) {
+    final qr = (r ~/ step) * step;
+    final qg = (g ~/ step) * step;
+    final qb = (b ~/ step) * step;
+    return (qr << 16) | (qg << 8) | qb;
+  }
+
+  /// Most common quantized color on the outer ring of cells — usually the
+  /// photo backdrop or zoom pad.
+  static int? _perimeterBackgroundKey(
+    List<List<ui.Color>> cellColors,
+    int quantizeStep,
+  ) {
+    final n = cellColors.length;
+    if (n == 0) return null;
+
+    final counts = <int, int>{};
+    void tally(ui.Color c) {
+      final r = (c.r * 255.0).round() & 0xFF;
+      final g = (c.g * 255.0).round() & 0xFF;
+      final b = (c.b * 255.0).round() & 0xFF;
+      final key = _quantizeKey(r, g, b, quantizeStep);
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+
+    for (var x = 0; x < n; x++) {
+      tally(cellColors[0][x]);
+      if (n > 1) tally(cellColors[n - 1][x]);
+    }
+    for (var y = 1; y < n - 1; y++) {
+      tally(cellColors[y][0]);
+      tally(cellColors[y][n - 1]);
+    }
+
+    if (counts.isEmpty) return null;
+    return counts.entries.reduce((a, b) => a.value >= b.value ? a : b).key;
+  }
+
+  static (int r, int g, int b)? _bucketAverage(
+    List<List<ui.Color>> cellColors, {
+    required int quantizeStep,
+    required int onlyKey,
+    bool perimeterOnly = false,
+  }) {
+    final n = cellColors.length;
+    var sr = 0, sg = 0, sb = 0, count = 0;
+
+    void consider(ui.Color c) {
+      final r = (c.r * 255.0).round() & 0xFF;
+      final g = (c.g * 255.0).round() & 0xFF;
+      final b = (c.b * 255.0).round() & 0xFF;
+      if (_quantizeKey(r, g, b, quantizeStep) != onlyKey) return;
+      sr += r;
+      sg += g;
+      sb += b;
+      count++;
+    }
+
+    if (perimeterOnly) {
+      for (var x = 0; x < n; x++) {
+        consider(cellColors[0][x]);
+        if (n > 1) consider(cellColors[n - 1][x]);
+      }
+      for (var y = 1; y < n - 1; y++) {
+        consider(cellColors[y][0]);
+        consider(cellColors[y][n - 1]);
+      }
+    } else {
+      for (final row in cellColors) {
+        for (final c in row) {
+          consider(c);
+        }
+      }
+    }
+
+    if (count == 0) return null;
+    return (sr ~/ count, sg ~/ count, sb ~/ count);
+  }
+
+  /// True when [r,g,b] is close enough to [br,bg,bb] to treat as the same
+  /// backdrop (covers slight gradients / compression noise).
+  static bool _nearRgb(int r, int g, int b, int br, int bg, int bb, {int maxDist = 42}) {
+    final dr = r - br;
+    final dg = g - bg;
+    final db = b - bb;
+    return dr * dr + dg * dg + db * db <= maxDist * maxDist;
   }
 
   /// True for white / off-white (high value, low chroma) — typically background.
