@@ -29,6 +29,7 @@ class _HomePageState extends State<HomePage> {
   double _zoom = 1.0; // 0.5 - 2.0, matches the 50%-200% web slider
   bool _showLines = true;
   bool _showSource = false;
+  bool _flipHorizontal = false;
   bool _isProcessing = false;
   String? _readout;
 
@@ -58,6 +59,7 @@ class _HomePageState extends State<HomePage> {
       _readout = null;
       _expandedNinth = null;
       _showSource = false;
+      _flipHorizontal = false;
     });
     await _process();
   }
@@ -91,22 +93,45 @@ class _HomePageState extends State<HomePage> {
     final colors = _cellColors;
     if (colors == null) return null;
     final ninth = _expandedNinth;
-    if (ninth == null) return colors;
-    const s = MosaicEngine.ninthSize;
-    final ox = ninth.$1 * s;
-    final oy = ninth.$2 * s;
-    return List.generate(s, (y) => List.generate(s, (x) => colors[oy + y][ox + x]));
+    late final List<List<Color>> view;
+    if (ninth == null) {
+      view = colors;
+    } else {
+      const s = MosaicEngine.ninthSize;
+      final ox = ninth.$1 * s;
+      final oy = ninth.$2 * s;
+      view = List.generate(s, (y) => List.generate(s, (x) => colors[oy + y][ox + x]));
+    }
+    return _flipHorizontal ? _flipRows(view) : view;
   }
+
+  List<List<Color>> _flipRows(List<List<Color>> colors) =>
+      [for (final row in colors) row.reversed.toList()];
 
   (int gx, int gy) _cellAt(Offset localPosition, double canvasSize) {
     final display = _displayColors!;
     final n = display.length;
-    final lx = (localPosition.dx / canvasSize * n).floor().clamp(0, n - 1);
+    var lx = (localPosition.dx / canvasSize * n).floor().clamp(0, n - 1);
     final ly = (localPosition.dy / canvasSize * n).floor().clamp(0, n - 1);
+    // Display may be mirrored; map visual x back into unflipped cell space.
+    if (_flipHorizontal) lx = n - 1 - lx;
     final ninth = _expandedNinth;
     if (ninth == null) return (lx, ly);
     const s = MosaicEngine.ninthSize;
     return (ninth.$1 * s + lx, ninth.$2 * s + ly);
+  }
+
+  void _toggleFlipHorizontal() {
+    setState(() => _flipHorizontal = !_flipHorizontal);
+  }
+
+  void _onHorizontalSwipe(DragEndDetails details) {
+    final vx = details.velocity.pixelsPerSecond.dx;
+    final vy = details.velocity.pixelsPerSecond.dy;
+    // Quick left/right flick — ignore mostly-vertical pans used for inspect.
+    if (vx.abs() < 450) return;
+    if (vy.abs() > vx.abs() * 0.75) return;
+    _toggleFlipHorizontal();
   }
 
   void _onCanvasInspect(Offset localPosition, double canvasSize) {
@@ -147,7 +172,8 @@ class _HomePageState extends State<HomePage> {
   Future<void> _exportAndShare() async {
     final colors = _cellColors;
     if (colors == null) return;
-    final bytes = await MosaicEngine.renderToPng(cellColors: colors, showLines: _showLines);
+    final exportColors = _flipHorizontal ? _flipRows(colors) : colors;
+    final bytes = await MosaicEngine.renderToPng(cellColors: exportColors, showLines: _showLines);
     await Share.shareXFiles(
       [XFile.fromData(bytes, name: 'pxlr-mosaic.png', mimeType: 'image/png')],
       text: 'My 27×27 PXLR mosaic',
@@ -208,12 +234,18 @@ class _HomePageState extends State<HomePage> {
             child: _showSource
                 ? (_sourceBytes == null
                     ? const SizedBox.shrink(key: ValueKey('source-empty'))
-                    : Image.memory(
-                        _sourceBytes!,
-                        key: const ValueKey('source'),
-                        fit: BoxFit.contain,
-                        width: canvasSize,
-                        height: canvasSize,
+                    : GestureDetector(
+                        key: ValueKey('source-$_flipHorizontal'),
+                        onPanEnd: _onHorizontalSwipe,
+                        child: Transform.flip(
+                          flipX: _flipHorizontal,
+                          child: Image.memory(
+                            _sourceBytes!,
+                            fit: BoxFit.contain,
+                            width: canvasSize,
+                            height: canvasSize,
+                          ),
+                        ),
                       ))
                 : (_displayColors == null
                     ? const Center(
@@ -221,8 +253,9 @@ class _HomePageState extends State<HomePage> {
                         child: CircularProgressIndicator(color: PxlrColors.pink),
                       )
                     : GestureDetector(
-                        key: ValueKey(_expandedNinth),
+                        key: ValueKey('mosaic-$_expandedNinth-$_flipHorizontal'),
                         onPanUpdate: (d) => _onCanvasInspect(d.localPosition, canvasSize),
+                        onPanEnd: _onHorizontalSwipe,
                         onTapDown: (d) => _onMosaicTap(d.localPosition, canvasSize),
                         child: CustomPaint(
                           size: const Size(canvasSize, canvasSize),
