@@ -79,6 +79,13 @@ class _HomePageState extends State<HomePage> {
     });
   }
 
+  void _nudgeZoom(double delta) {
+    final next = (((_zoom + delta) * 100).round() / 100).clamp(0.5, 2.0);
+    if (next == _zoom) return;
+    setState(() => _zoom = next);
+    _process();
+  }
+
   /// Cell colors currently shown in the mosaic panel (full 27×27 or one ninth).
   List<List<Color>>? get _displayColors {
     final colors = _cellColors;
@@ -222,7 +229,11 @@ class _HomePageState extends State<HomePage> {
                           painter: MosaicPainter(
                             cellColors: _displayColors!,
                             showLines: _showLines,
-                            boldEvery: MosaicEngine.ninthSize,
+                            // Full mosaic: bold every 9. Expanded ninth: bold
+                            // every 3 so the 9×9 itself reads as a 3×3 of ninths.
+                            boldEvery: _expandedNinth == null
+                                ? MosaicEngine.ninthSize
+                                : MosaicEngine.subNinthSize,
                           ),
                         ),
                       )),
@@ -244,11 +255,8 @@ class _HomePageState extends State<HomePage> {
               : MosaicEngine.dominantColors(_displayColors!),
           onShowSourceChanged: (v) => setState(() => _showSource = v),
           onShowLinesChanged: (v) => setState(() => _showLines = v),
-          onZoomChanged: (v) => setState(() => _zoom = v),
-          onZoomChangeEnd: (v) {
-            setState(() => _zoom = v);
-            _process();
-          },
+          onZoomOut: () => _nudgeZoom(-0.05),
+          onZoomIn: () => _nudgeZoom(0.05),
         ),
         const SizedBox(height: 18),
         Wrap(
@@ -378,8 +386,8 @@ class _ControlsPanel extends StatelessWidget {
     required this.dominantColors,
     required this.onShowSourceChanged,
     required this.onShowLinesChanged,
-    required this.onZoomChanged,
-    required this.onZoomChangeEnd,
+    required this.onZoomOut,
+    required this.onZoomIn,
   });
 
   final bool showSource;
@@ -389,12 +397,16 @@ class _ControlsPanel extends StatelessWidget {
   final List<Color> dominantColors;
   final ValueChanged<bool> onShowSourceChanged;
   final ValueChanged<bool> onShowLinesChanged;
-  final ValueChanged<double> onZoomChanged;
-  final ValueChanged<double> onZoomChangeEnd;
+  final VoidCallback onZoomOut;
+  final VoidCallback onZoomIn;
 
   @override
   Widget build(BuildContext context) {
+    final canZoomOut = zoom > 0.5;
+    final canZoomIn = zoom < 2.0;
+
     return Container(
+      width: 300,
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
       decoration: BoxDecoration(
         color: PxlrColors.panel,
@@ -405,16 +417,20 @@ class _ControlsPanel extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
               Text('Source', style: PxlrText.body()),
+              const Spacer(),
               Switch(
                 value: showSource,
                 activeThumbColor: PxlrColors.cyan,
                 onChanged: onShowSourceChanged,
               ),
-              const SizedBox(width: 22),
+            ],
+          ),
+          Row(
+            children: [
               Text('Grid lines', style: PxlrText.body()),
+              const Spacer(),
               Switch(
                 value: showLines,
                 activeThumbColor: PxlrColors.pink,
@@ -424,41 +440,39 @@ class _ControlsPanel extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
               Text('Zoom', style: PxlrText.body()),
-              SizedBox(
-                width: 180,
-                child: Slider(
-                  min: 0.5,
-                  max: 2.0,
-                  value: zoom,
-                  activeColor: PxlrColors.pink,
-                  onChanged: onZoomChanged,
-                  onChangeEnd: onZoomChangeEnd,
-                ),
-              ),
-              SizedBox(
-                width: 44,
-                child: Text(
-                  '${(zoom * 100).round()}%',
-                  style: PxlrText.mono(color: PxlrColors.gold, weight: FontWeight.bold),
-                ),
-              ),
+              const Spacer(),
               if (isProcessing) ...[
-                const SizedBox(width: 8),
                 const SizedBox(
                   width: 14,
                   height: 14,
                   child: CircularProgressIndicator(strokeWidth: 2, color: PxlrColors.cyan),
                 ),
+                const SizedBox(width: 8),
               ],
+              Text(
+                '${(zoom * 100).round()}%',
+                style: PxlrText.mono(color: PxlrColors.gold, weight: FontWeight.bold),
+              ),
+              const SizedBox(width: 12),
+              _ZoomButton(
+                label: '−',
+                enabled: canZoomOut && !isProcessing,
+                onTap: onZoomOut,
+              ),
+              const SizedBox(width: 8),
+              _ZoomButton(
+                label: '+',
+                enabled: canZoomIn && !isProcessing,
+                onTap: onZoomIn,
+              ),
             ],
           ),
           if (dominantColors.isNotEmpty) ...[
             const SizedBox(height: 12),
             Row(
-              mainAxisSize: MainAxisSize.min,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 for (var i = 0; i < dominantColors.length; i++) ...[
                   if (i > 0) const SizedBox(width: 10),
@@ -479,6 +493,43 @@ class _ControlsPanel extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _ZoomButton extends StatelessWidget {
+  const _ZoomButton({
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool enabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.35,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        borderRadius: BorderRadius.circular(8),
+        child: Container(
+          width: 36,
+          height: 36,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: PxlrColors.panel,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: PxlrColors.pink, width: 2),
+          ),
+          child: Text(
+            label,
+            style: PxlrText.label(size: 18, color: PxlrColors.pink),
+          ),
+        ),
       ),
     );
   }

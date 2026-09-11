@@ -17,6 +17,9 @@ class MosaicEngine {
   /// Side length of one "ninth" (the 3×3 grouping of 9×9 blocks).
   static const int ninthSize = 9;
 
+  /// Side length of one cell-group inside an expanded ninth (3×3 of 3×3).
+  static const int subNinthSize = 3;
+
   /// Returns up to [count] dominant colors in [cellColors], ranked by how
   /// many cells fall into each quantized bucket. Bucket averages are used
   /// so the swatches match the mosaic rather than the coarse quantizer.
